@@ -7,6 +7,7 @@ import (
 	"net"
 	"os"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -343,13 +344,19 @@ func (i *arrayFlags) Set(value string) error {
 }
 
 // Creates an initial queue on the emulator
-func createInitialQueue(emulatorServer *Server, name string) {
+func createInitialQueue(emulatorServer *Server, name string, maxDispatchesPerSecond float64, maxConcurrentDispatches int32) {
 	print(fmt.Sprintf("Creating initial queue %s\n", name))
 
 	r := regexp.MustCompile("/queues/[A-Za-z0-9-]+$")
 	parentName := r.ReplaceAllString(name, "")
 
-	queue := &tasks.Queue{Name: name}
+	queue := &tasks.Queue{
+		Name: name,
+		RateLimits: &tasks.RateLimits{
+			MaxDispatchesPerSecond:  maxDispatchesPerSecond,
+			MaxConcurrentDispatches: maxConcurrentDispatches,
+		},
+	}
 	req := &tasks.CreateQueueRequest{
 		Parent: parentName,
 		Queue:  queue,
@@ -386,6 +393,24 @@ func main() {
 	}
 	hardResetOnPurgeQueue := flag.Bool("hard-reset-on-purge-queue", defaultHardResetOnPurgeQueue, "Set to force the 'Purge Queue' call to perform a hard reset of all state (differs from production)")
 
+	defaultMaxDispatchesPerSecond := 200.0
+	if os.Getenv("MAX_DISPATCHES_PER_SECOND") != "" {
+		val, err := strconv.ParseFloat(os.Getenv("MAX_DISPATCHES_PER_SECOND"), 64)
+		if err == nil {
+			defaultMaxDispatchesPerSecond = val
+		}
+	}
+	maxDispatchesPerSecond := flag.Float64("max-dispatches-per-second", defaultMaxDispatchesPerSecond, "The maximum number of tasks dispatched per second")
+
+	defaultMaxConcurrentDispatches := 20
+	if os.Getenv("MAX_CONCURRENT_DISPATCHES") != "" {
+		val, err := strconv.Atoi(os.Getenv("MAX_CONCURRENT_DISPATCHES"))
+		if err == nil {
+			defaultMaxConcurrentDispatches = val
+		}
+	}
+	maxConcurrentDispatches := flag.Int("max-concurrent-dispatches", defaultMaxConcurrentDispatches, "The maximum number of tasks dispatched concurrently")
+
 	var initialQueues arrayFlags
 
 	flag.Var(&initialQueues, "queue", "A queue to create on startup (repeat as required)")
@@ -417,7 +442,7 @@ func main() {
 	tasks.RegisterCloudTasksServer(grpcServer, emulatorServer)
 
 	for i := 0; i < len(initialQueues); i++ {
-		createInitialQueue(emulatorServer, initialQueues[i])
+		createInitialQueue(emulatorServer, initialQueues[i], *maxDispatchesPerSecond, int32(*maxConcurrentDispatches))
 	}
 
 	grpcServer.Serve(lis)
